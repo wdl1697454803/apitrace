@@ -43,7 +43,7 @@
 #include <unistd.h>
 
 
-// Must not use std::string to prevent it being destroyed.
+// Must not use std::string to prevent it from being destroyed.
 static char g_processName[4097];
 
 extern "C"  {
@@ -123,8 +123,12 @@ setProcessName(const char *processName)
     *p__progname = progname;
 }
 
+void
+setProcessCommandLine(const char* processCommandLine)
+{
+}
 
-#elif defined(_WIN32)
+#elif defined(_WIN32) && (defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_AMD64))
 
 #include <windows.h>
 #include "mhook.h"
@@ -146,7 +150,9 @@ GetModuleFromAddress(PVOID pAddress)
     return bRet ? hModule : nullptr;
 }
 
-static std::string g_processName;
+// Must not use std::string to prevent it from being destroyed.
+static char g_processName[4097];
+static char g_processCommandLine[8192];
 
 
 static DWORD WINAPI
@@ -163,17 +169,17 @@ MyGetModuleFileNameA(HMODULE hModule, LPSTR lpFilename, DWORD nSize)
             std::cerr << "GetModuleFileNameA(" << hModule << ") from " << szCaller << "\n";
         }
 
-        assert(!g_processName.empty());
+        assert(*g_processName);
         assert(nSize != 0);
 
-        size_t len = g_processName.length();
+        size_t len = strlen(g_processName);
         if (len < nSize) {
-            memcpy(lpFilename, g_processName.data(), len);
+            memcpy(lpFilename, g_processName, len);
             lpFilename[len] = 0;
             SetLastError(ERROR_SUCCESS);
             return len;
         } else {
-            memcpy(lpFilename, g_processName.data(), nSize - 1);
+            memcpy(lpFilename, g_processName, nSize - 1);
             lpFilename[nSize - 1] = 0;
             SetLastError(ERROR_INSUFFICIENT_BUFFER);
             return nSize;
@@ -197,17 +203,17 @@ MyGetModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize)
             std::cerr << "GetModuleFileNameW(" << hModule << ") from " << szCaller << "\n";
         }
 
-        assert(!g_processName.empty());
+        assert(*g_processName);
         assert(nSize != 0);
 
-        size_t len = g_processName.length();
+        size_t len = strlen(g_processName);
         if (len < nSize) {
-            ::MultiByteToWideChar(CP_UTF8, 0, g_processName.data(), -1, lpFilename, len);
+            ::MultiByteToWideChar(CP_UTF8, 0, g_processName, -1, lpFilename, len);
             lpFilename[len] = 0;
             SetLastError(ERROR_SUCCESS);
             return len;
         } else {
-            ::MultiByteToWideChar(CP_UTF8, 0, g_processName.data(), -1, lpFilename, nSize - 1);
+            ::MultiByteToWideChar(CP_UTF8, 0, g_processName, -1, lpFilename, nSize - 1);
             lpFilename[nSize - 1] = L'\0';
             SetLastError(ERROR_INSUFFICIENT_BUFFER);
             return nSize;
@@ -220,7 +226,8 @@ MyGetModuleFileNameW(HMODULE hModule, LPWSTR lpFilename, DWORD nSize)
 void
 setProcessName(const char *processName)
 {
-    g_processName = processName;
+    strncpy(g_processName, processName, sizeof g_processName - 1);
+    g_processName[sizeof g_processName - 1] = '\0';
 
     static BOOL bHooked = FALSE;
     if (!bHooked) {
@@ -248,11 +255,61 @@ setProcessName(const char *processName)
     }
 }
 
+static LPSTR WINAPI
+MyGetCommandLineA()
+{
+    return g_processCommandLine;
+}
+
+static LPWSTR WINAPI
+MyGetCommandLineW()
+{
+    static wchar_t processCommandLineW[8192];
+    static bool bConverted = false;
+    if (!bConverted) {
+        ::MultiByteToWideChar(CP_UTF8, 0, g_processName, -1, processCommandLineW, sizeof(processCommandLineW) / sizeof(wchar_t));
+        bConverted = true;
+    }
+    return processCommandLineW;
+}
+
+void
+setProcessCommandLine(const char* processCommandLine)
+{
+    strncpy(g_processCommandLine, processCommandLine, sizeof g_processCommandLine - 1);
+    g_processCommandLine[sizeof g_processCommandLine - 1] = '\0';
+
+    static BOOL bHooked = FALSE;
+    if (!bHooked) {
+        bHooked = TRUE;
+
+        LPVOID lpOrigAddress = (LPVOID)GetProcAddress(GetModuleHandleA("kernel32"), "GetCommandLineA");
+        if (lpOrigAddress) {
+            LPVOID lpHookAddress = (LPVOID)&MyGetCommandLineA;
+            if (!Mhook_SetHook(&lpOrigAddress, lpHookAddress)) {
+                std::cerr << "error: failed to hook GetCommandLineA\n";
+            }
+        }
+
+        lpOrigAddress = (LPVOID)GetProcAddress(GetModuleHandleA("kernel32"), "GetCommandLineW");
+        if (lpOrigAddress) {
+            LPVOID lpHookAddress = (LPVOID)&MyGetCommandLineW;
+            if (!Mhook_SetHook(&lpOrigAddress, lpHookAddress)) {
+                std::cerr << "error: failed to hook GetCommandLineW\n";
+            }
+        }
+    }
+}
 
 #else
 
 void
 setProcessName(const char *processName)
+{
+}
+
+void
+setProcessCommandLine(const char* processCommandLine)
 {
 }
 

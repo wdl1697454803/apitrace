@@ -230,9 +230,8 @@ class GlRetracer(Retracer):
         # if no pack buffer is bound we have to read back
         data_param_name = "pixels"
         if function.name == "glGetTexImage":
-            print(r'     GLint max_tex_size;')
-            print(r'     glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_tex_size);')
-            print(r'     buffer.resize(max_tex_size * max_tex_size * max_tex_size);');
+            # TODO: https://github.com/apitrace/apitrace/commit/2a83ddd4f67014e2aacf99c6b203fd3f6b13c4f3#r130319306
+            print(r'        return;')
         elif function.name == "glGetTexnImage":
             print(r'     buffer.resize(call.arg(4).toUInt());');
         elif function.name == "glGetTextureImage":
@@ -332,12 +331,13 @@ class GlRetracer(Retracer):
         if function.name in ('glDeleteBuffers', 'glDeleteBuffersARB'):
             print(r'    if (currentContext && currentContext->features().ARB_direct_state_access) {')
             print(r'        for (GLsizei i = 0; i < n; ++i) {')
-            print(r'            GLvoid *ptr = nullptr;')
-            print(r'            if (!buffers[i])')
-            print(r'                   continue;')
-            print(r'            glGetNamedBufferPointerv(buffers[i], GL_BUFFER_MAP_POINTER, &ptr);')
-            print(r'            if (ptr) {')
-            print(r'                retrace::delRegionByPointer(ptr);')
+            print(r'            GLuint buffer = buffers[i];')
+            print(r'            if (buffer != 0 && glIsBuffer(buffer)) {')
+            print(r'                GLvoid *ptr = nullptr;')
+            print(r'                glGetNamedBufferPointerv(buffers[i], GL_BUFFER_MAP_POINTER, &ptr);')
+            print(r'                if (ptr) {')
+            print(r'                    retrace::delRegionByPointer(ptr);')
+            print(r'                }')
             print(r'            }')
             print(r'        }')
             print(r'    }')

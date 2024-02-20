@@ -52,6 +52,7 @@ struct trim_options {
 
     unsigned top_frame_call_counts;
     bool keep_all_states;
+    bool swap_to_finish;
 
     /* Output filename */
     std::string output;
@@ -71,6 +72,7 @@ usage(void)
                            "    -s, --setupframes=FRAME  Frame that are kept in the trace but but without the end-of-frame command.\n"
                            "    -t, --top-calls-per-frame=NUMBER Print NUMBER of frames with the top amount of OpenGL calls\n"
                            "    -k, --keep-all-states    Keep all state calls in the trace (This may help with textures that are created by using FBO\n"
+                           "    -F, --swap-to-finish     Replace swaps in the setup frame with glFinish\n"
                            "    -o, --output=TRACE_FILE  Output trace file\n"
                ;
 }
@@ -81,7 +83,7 @@ enum {
 };
 
 const static char *
-shortOptions = "t:hko:f:s:x";
+shortOptions = "t:hkFo:f:s:x";
 
 bool operator < (std::pair<unsigned, unsigned>& lhs, std::pair<unsigned, unsigned>& rhs)
 {
@@ -95,6 +97,7 @@ longOptions[] = {
     {"frames", required_argument, 0, 'f'},
     {"setupframes", required_argument, 0, 's'},
     {"keep-all-states", no_argument, 0, 'k'},
+    {"swap-to-finish", no_argument, 0, 'F'},
     {"output", required_argument, 0, 'o'},
     {0, 0, 0, 0}
 };
@@ -130,18 +133,26 @@ static int trim_to_frame(const char *filename,
         out_filename = std::string(base.str()) + std::string("-trim.trace");
     }
 
-    FrameTrimmer trimmer(options.keep_all_states);
-
     frame = 0;
     uint64_t callid = 0;
     std::unique_ptr<trace::Call> call(p.parse_call());
     std::priority_queue<std::pair<unsigned, unsigned>> calls_in_frame;
 
-    unsigned ncalls = 0;
-    unsigned ncalls2 = 0;
+    /* Determine whether the trace API is supported */
+    while (call && p.api == trace::API_UNKNOWN)
+        call.reset(p.parse_call());
+    if (!FrameTrimmer::isSupported(p.api)) {
+        std::cerr << "error: unsupported API" << std::endl;
+        return 1;
+    }
+    p.close();
+    p.open(filename);
+    call.reset(p.parse_call());
+
+    auto trimmer = FrameTrimmer::create(p.api, options.keep_all_states, options.swap_to_finish);
 
     unsigned calls_in_this_frame = 0;
-    bool start_last_frame = false;
+    uint32_t last_frame_start = 0;
 
     while (call) {
         /* There's no use doing any work past the last call and frame
@@ -155,18 +166,16 @@ static int trim_to_frame(const char *filename,
             ft = ft_key_frame;
         if (options.frames.contains(frame, call->flags)) {
             ft = ft_retain_frame;
-            if (!start_last_frame && frame == options.frames.getLast()) {
-                start_last_frame = true;
-                trimmer.start_last_frame(call->no);
+            if ((last_frame_start == 0) && frame == options.frames.getLast()) {
+                last_frame_start = call->no - 1;
+                trimmer->start_last_frame(last_frame_start);
             }
         }
 
-        trimmer.call(*call, ft);
+        trimmer->call(*call, ft);
 
         if (call->flags & trace::CALL_FLAG_END_FRAME) {
             if (options.top_frame_call_counts > 0) {
-                ncalls += calls_in_this_frame;
-                ncalls2 += calls_in_this_frame * calls_in_this_frame;
                 calls_in_frame.push(std::make_pair(calls_in_this_frame, frame));
             }
             calls_in_this_frame = 0;
@@ -182,7 +191,11 @@ static int trim_to_frame(const char *filename,
         call.reset(p.parse_call());
         ++calls_in_this_frame;
     }
-    trimmer.finalize();
+
+    trimmer->end_last_frame();
+    auto skip_loop_calls = trimmer->get_skip_loop_calls();
+    auto swap_calls = trimmer->get_swap_to_finish_calls();
+
     std::cerr << "\nDone scanning frames\n";
 
     trace::Writer writer;
@@ -191,7 +204,7 @@ static int trim_to_frame(const char *filename,
         return 2;
     }
 
-    auto call_ids = trimmer.getUniqueCallIds();
+    auto call_ids = trimmer->getUniqueCallIds();
     std::cerr << "Write output file\n";
 
     p.close();
@@ -199,6 +212,10 @@ static int trim_to_frame(const char *filename,
     call.reset(p.parse_call());
 
     std::cerr << "Copying " << call_ids.size() << " calls\n";
+    std::cerr << "Write calls before " << last_frame_start << " and setup calls from last frame\n";
+
+    int call_id = 0;
+    const trace::FunctionSig glFinishSig = {0, "glFinish", 0, NULL};
 
     while (1) {
         while (call && call_ids.find(call->no) == call_ids.end())
@@ -207,7 +224,40 @@ static int trim_to_frame(const char *filename,
         if (!call)
             break;
 
-        writer.writeCall(call.get());
+        // Write setup calls in last frame  before last frame starts
+        if (call->no < last_frame_start ||
+                skip_loop_calls.find(call->no) != skip_loop_calls.end()) {
+
+            if (options.swap_to_finish &&
+                    swap_calls.find(call->no) != swap_calls.end()) {
+                call.reset(new trace::Call(&glFinishSig, 0, call->thread_id));
+            }
+
+            call->no = call_id++;
+            writer.writeCall(call.get());
+        }
+        call.reset(p.parse_call());
+    }
+
+    // Now write the last frame without the setup calls
+    p.close();
+    p.open(filename);
+    call.reset(p.parse_call());
+
+    std::cerr << "Write calls after " << last_frame_start << " without setup calls\n";
+    while (1) {
+        while (call &&
+               (call->no < last_frame_start ||
+                call_ids.find(call->no) == call_ids.end()))
+            call.reset(p.parse_call());
+
+        if (!call)
+            break;
+
+        if (skip_loop_calls.find(call->no) == skip_loop_calls.end()) {
+            call->no = call_id++;
+            writer.writeCall(call.get());
+        }
         call.reset(p.parse_call());
     }
 
@@ -231,6 +281,7 @@ int main(int argc, char **argv)
     options.frames = trace::CallSet(trace::FREQUENCY_NONE);
     options.top_frame_call_counts = false;
     options.keep_all_states = false;
+    options.swap_to_finish = false;
 
     int opt;
     while ((opt = getopt_long(argc, argv, shortOptions, longOptions, nullptr)) != -1) {
@@ -252,6 +303,9 @@ int main(int argc, char **argv)
             break;
         case 'k':
             options.keep_all_states = true;
+            break;
+        case 'F':
+            options.swap_to_finish = true;
             break;
         default:
             std::cerr << "error: unexpected option `" << (char)opt << "`\n";

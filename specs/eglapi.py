@@ -56,6 +56,12 @@ EGLSync = Opaque("EGLSync")
 EGLImage = Opaque("EGLImage")
 EGLTime = Alias("EGLTime", UInt64)
 
+# EGL_EXT_device_query
+EGLDeviceEXT = Opaque("EGLDeviceEXT")
+
+# EGL_EXT_image_dma_buf_import_modifiers
+EGLuint64KHR = Alias("EGLuint64KHR", UInt64)
+
 # EGL_KHR_image_base
 EGLImageKHR = Alias("EGLImageKHR", EGLImage)
 
@@ -77,6 +83,10 @@ EGLClientPixmapHI = Struct("struct EGLClientPixmapHI", [
 
 # EGL_NV_system_time
 EGLuint64NV = Alias("EGLuint64NV", UInt64)
+
+# EGL_WL_bind_wayland_display
+WlDisplay = Opaque("struct wl_display*")
+WlResource = Opaque("struct wl_resource*")
 
 eglapi = Module("EGL")
 
@@ -100,8 +110,19 @@ EGLConformantFlags = Flags(Int, [
 
 EGLVGAlphaFormat = FakeEnum(Int, ['EGL_VG_ALPHA_FORMAT_NONPRE', 'EGL_VG_ALPHA_FORMAT_PRE'])
 EGLVGColorspace = FakeEnum(Int, ['EGL_VG_COLORSPACE_sRGB', 'EGL_VG_COLORSPACE_LINEAR'])
-EGLTextureFormat = FakeEnum(Int, ['EGL_NO_TEXTURE', 'EGL_TEXTURE_RGB', 'EGL_TEXTURE_RGBA'])
 EGLTextureTarget = FakeEnum(Int, ['EGL_TEXTURE_2D', 'EGL_NO_TEXTURE'])
+
+EGLTextureFormat = FakeEnum(Int, [
+    'EGL_NO_TEXTURE',
+    'EGL_TEXTURE_RGB',
+    'EGL_TEXTURE_RGBA',
+
+    # EGL_WL_bind_wayland_display
+    'EGL_TEXTURE_Y_U_V_WL',
+    'EGL_TEXTURE_Y_UV_WL',
+    'EGL_TEXTURE_Y_XUXV_WL',
+    'EGL_TEXTURE_EXTERNAL_WL',
+])
 
 def EGLIntArray(values):
     return AttribArray(Const(EGLint_enum), values, terminator = 'EGL_NONE')
@@ -185,6 +206,17 @@ EGLContextAttribs = EGLIntArray([
         'EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT',
     ])),
     ('EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY', EGLenum),
+    ('EGL_GENERATE_RESET_ON_VIDEO_MEMORY_PURGE_NV', EGLBoolean),
+
+    # EGL_IMG_context_priority
+    ('EGL_CONTEXT_PRIORITY_LEVEL_IMG', Flags(Int, [
+        'EGL_CONTEXT_PRIORITY_HIGH_IMG',
+        'EGL_CONTEXT_PRIORITY_MEDIUM_IMG',
+        'EGL_CONTEXT_PRIORITY_LOW_IMG',
+
+        # EGL_NV_context_priority_realtime
+        'EGL_CONTEXT_PRIORITY_REALTIME_NV',
+    ])),
 ])
 
 EGLDrmImageMesaAttribs = EGLIntArray([
@@ -230,6 +262,22 @@ eglImageAttribs = [
     ('EGL_SAMPLE_RANGE_HINT_EXT', FakeEnum(Int, ['EGL_YUV_FULL_RANGE_EXT', 'EGL_YUV_NARROW_RANGE_EXT'])),
     ('EGL_YUV_CHROMA_HORIZONTAL_SITING_HINT_EXT', FakeEnum(Int, ['EGL_YUV_CHROMA_SITING_0_EXT', 'EGL_YUV_CHROMA_SITING_0_5_EXT'])),
     ('EGL_YUV_CHROMA_VERTICAL_SITING_HINT_EXT', FakeEnum(Int, ['EGL_YUV_CHROMA_SITING_0_EXT', 'EGL_YUV_CHROMA_SITING_0_5_EXT'])),
+
+    # EGL_EXT_image_dma_buf_import_modifiers
+    ('EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT', Int),
+    ('EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT', Int),
+    ('EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT', Int),
+    ('EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT', Int),
+    ('EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT', Int),
+    ('EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT', Int),
+    ('EGL_DMA_BUF_PLANE3_FD_EXT', Int),
+    ('EGL_DMA_BUF_PLANE3_OFFSET_EXT', Int),
+    ('EGL_DMA_BUF_PLANE3_PITCH_EXT', Int),
+    ('EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT', Int),
+    ('EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT', Int),
+
+    # EGL_WL_bind_wayland_display
+    ('EGL_WAYLAND_PLANE_WL', Int),
 ]
 EGLImageAttribs = EGLAttribArray(eglImageAttribs)
 EGLImageAttribsKHR = EGLIntArray(eglImageAttribs)
@@ -295,11 +343,26 @@ eglapi.addFunctions([
     GlFunction(EGLSurface, "eglCreatePlatformPixmapSurface", [(EGLDisplay, "dpy"), (EGLConfig, "config"), (OpaquePointer(Void), "native_pixmap"), (EGLAttribArray([]), "attrib_list")]),
     GlFunction(EGLBoolean, "eglWaitSync", [(EGLDisplay, "dpy"), (EGLSync, "sync"), (EGLint, "flags")]),
 
+    # EGL_ANDROID_native_fence_sync
+    GlFunction(EGLint, "eglDupNativeFenceFDANDROID", [(EGLDisplay, "dpy"), (EGLSyncKHR, "sync")]),
+
     # EGL_ANGLE_query_surface_pointer
     GlFunction(EGLBoolean, "eglQuerySurfacePointerANGLE", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), (EGLint_enum, "attribute"), Out(Pointer(OpaquePointer(Void)), "value")], sideeffects=False),
 
     # EGL_CHROMIUM_get_sync_values
     GlFunction(Bool, "eglGetSyncValuesCHROMIUM", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), Out(Pointer(Int64), "ust"), Out(Pointer(Int64), "msc"), Out(Pointer(Int64), "sbc")], sideeffects=False),
+
+    # EGL_EXT_device_enumeration
+    GlFunction(EGLBoolean, "eglQueryDevicesEXT", [(EGLint, "max_devices"), Out(Array(EGLDeviceEXT, "max_devices"), "devices"), Out(Array(EGLint, "max_devices"), "num_devices")], sideeffects=False),
+
+    # EGL_EXT_device_query
+    GlFunction(EGLBoolean, "eglQueryDeviceAttribEXT", [(EGLDeviceEXT, "device"), (EGLint_enum, "attribute"), Out(Pointer(EGLAttrib), "value")], sideeffects=False),
+    GlFunction(ConstCString, "eglQueryDeviceStringEXT", [(EGLDeviceEXT, "device"), (EGLint_enum, "name")], sideeffects=False),
+    GlFunction(EGLBoolean, "eglQueryDisplayAttribEXT", [(EGLDisplay, "dpy"), (EGLint_enum, "attribute"), Out(Pointer(EGLAttrib), "value")], sideeffects=False),
+
+    # EGL_EXT_image_dma_buf_import_modifiers
+    GlFunction(EGLBoolean, "eglQueryDmaBufFormatsEXT", [(EGLDisplay, "dpy"), (EGLint, "max_formats"), Out(Array(EGLint, "max_formats"), "formats"), Out(Pointer(EGLint), "num_formats")], sideeffects=False),
+    GlFunction(EGLBoolean, "eglQueryDmaBufModifiersEXT", [(EGLDisplay, "dpy"), (EGLint, "format"), (EGLint, "max_modifiers"), Out(Array(EGLuint64KHR, "max_modifiers"), "modifiers"), Out(Array(EGLBoolean, "max_modifiers"), "external_only"), Out(Pointer(EGLint), "num_modifiers")], sideeffects=False),
 
     # EGL_EXT_platform_base
     GlFunction(EGLDisplay, "eglGetPlatformDisplayEXT", [(EGLenum, "platform"), (OpaquePointer(Void), "native_display"), (EGLPlatformDisplayAttribsEXT, "attrib_list")]),
@@ -310,7 +373,7 @@ eglapi.addFunctions([
     GlFunction(EGLBoolean, "eglSetDamageRegionKHR", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), (Array(EGLint, "n_rects*4"), "rects"), (EGLint, "n_rects")]),
 
     # EGL_EXT_swap_buffers_with_damage
-    GlFunction(EGLBoolean, "eglSwapBuffersWithDamageEXT", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), (Array(EGLint, "n_rects*4"), "rects"), (EGLint, "n_rects")]),
+    GlFunction(EGLBoolean, "eglSwapBuffersWithDamageEXT", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), (Array(Const(EGLint), "n_rects*4"), "rects"), (EGLint, "n_rects")]),
 
     # EGL_HI_clientpixmap
     GlFunction(EGLSurface, "eglCreatePixmapSurfaceHI", [(EGLDisplay, "dpy"), (EGLConfig, "config"), (Pointer(EGLClientPixmapHI), "pixmap")]),
@@ -335,7 +398,7 @@ eglapi.addFunctions([
     GlFunction(EGLBoolean, "eglSignalSyncKHR", [(EGLDisplay, "dpy"), (EGLSyncKHR, "sync"), (EGLenum, "mode")]),
 
     # EGL_KHR_swap_buffers_with_damage
-    GlFunction(EGLBoolean, "eglSwapBuffersWithDamageKHR", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), (Array(EGLint, "n_rects*4"), "rects"), (EGLint, "n_rects")]),
+    GlFunction(EGLBoolean, "eglSwapBuffersWithDamageKHR", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), (Array(Const(EGLint), "n_rects*4"), "rects"), (EGLint, "n_rects")]),
 
     # EGL_KHR_wait_sync
     GlFunction(EGLint, "eglWaitSyncKHR", [(EGLDisplay, "dpy"), (EGLSyncKHR, "sync"), (EGLint, "flags")]),
@@ -352,6 +415,10 @@ eglapi.addFunctions([
     GlFunction(EGLImageKHR, "eglCreateDRMImageMESA", [(EGLDisplay, "dpy"), (EGLDrmImageMesaAttribs, "attrib_list")]),
     GlFunction(EGLBoolean, "eglExportDRMImageMESA", [(EGLDisplay, "dpy"), (EGLImageKHR, "image"), Out(Pointer(EGLint), "name"), Out(Pointer(EGLint), "handle"), Out(Pointer(EGLint), "stride")]),
 
+    # EGL_MESA_image_dma_buf_export
+    GlFunction(EGLBoolean, "eglExportDMABUFImageQueryMESA", [(EGLDisplay, "dpy"), (EGLImageKHR, "image"), Out(Pointer(EGLint), "fourcc"), Out(Pointer(EGLint), "num_planes"), Out(Pointer(EGLuint64KHR), "modifiers")]),
+    GlFunction(EGLBoolean, "eglExportDMABUFImageMESA", [(EGLDisplay, "dpy"), (EGLImageKHR, "image"), Out(Array(EGLint, 4), "fds"), Out(Array(EGLint, 4), "strides"), Out(Array(EGLint, 4), "offsets")]),
+
     # EGL_NV_post_sub_buffer
     GlFunction(EGLBoolean, "eglPostSubBufferNV", [(EGLDisplay, "dpy"), (EGLSurface, "surface"), (EGLint, "x"), (EGLint, "y"), (EGLint, "width"), (EGLint, "height")]),
 
@@ -362,4 +429,9 @@ eglapi.addFunctions([
     # GL_OES_EGL_image
     GlFunction(Void, "glEGLImageTargetTexture2DOES", [(GLenum, "target"), (EGLImageKHR, "image")]),
     GlFunction(Void, "glEGLImageTargetRenderbufferStorageOES", [(GLenum, "target"), (EGLImageKHR, "image")]),
+
+    # EGL_WL_bind_wayland_display
+    GlFunction(EGLBoolean, "eglBindWaylandDisplayWL", [(EGLDisplay, "dpy"), (WlDisplay, "display")]),
+    GlFunction(EGLBoolean, "eglUnbindWaylandDisplayWL", [(EGLDisplay, "dpy"), (WlDisplay, "display")]),
+    GlFunction(EGLBoolean, "eglQueryWaylandBufferWL", [(EGLDisplay, "dpy"), (WlResource, "buffer"), (EGLint_enum, "attribute"), Out(Pointer(EGLint), "value")], sideeffects=False),
 ])

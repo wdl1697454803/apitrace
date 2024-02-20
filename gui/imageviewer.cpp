@@ -5,11 +5,11 @@
 #include "image.hpp"
 
 #include <QDebug>
-#include <QDesktopWidget>
 #include <QPainter>
 #include <QPixmap>
 #include <QScrollBar>
 #include <QSettings>
+#include <QScreen>
 
 ImageViewer::ImageViewer(QWidget *parent, bool opaque, bool alpha)
     : QDialog(parent),
@@ -38,7 +38,7 @@ ImageViewer::ImageViewer(QWidget *parent, bool opaque, bool alpha)
     p.fillRect(16, 16, 16, 16, QColor(193, 193, 193));
     p.end();
     QPalette pal = scrollAreaWidgetContents->palette();
-    pal.setBrush(QPalette::Background,
+    pal.setBrush(QPalette::Window,
                  QBrush(px));
     pal.setBrush(QPalette::Base,
                  QBrush(px));
@@ -127,7 +127,7 @@ QSize ImageViewer::sizeHint() const
     QSize optimalWindowSize(m_convertedImage.width() + vScrollWidth,
                             m_convertedImage.height() + hScrollHeight);
 
-    QRect screenRect = QApplication::desktop()->availableGeometry();
+    QRect screenRect = QApplication::primaryScreen()->availableGeometry();
     const float maxPercentOfDesktopSpace = 0.8f;
     QSize maxAvailableSize(maxPercentOfDesktopSpace * screenRect.width(),
                            maxPercentOfDesktopSpace * screenRect.height());

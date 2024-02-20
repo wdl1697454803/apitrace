@@ -3,6 +3,7 @@
 *~
 *.7z
 *.a
+*.bin
 *.bmp
 *.bz2
 *.cbp
@@ -58,3 +59,4 @@ traces
 Testing
 os_thread_test
 /build
+version.h

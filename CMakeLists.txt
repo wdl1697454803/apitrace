@@ -24,7 +24,11 @@ project (apitrace)
 # command so that we can default to auto-detecting optional depencies, while
 # still providing a mechanism to force/disable these optional dependencies, as
 # prescribed in http://www.gentoo.org/proj/en/qa/automagic.xml
+if (NOT MINGW)
+    set (CMAKE_INTERPROCEDURAL_OPTIMIZATION True)
+endif ()
 set (ENABLE_GUI "AUTO" CACHE STRING "Enable Qt GUI.")
+option (ENABLE_QT6 "Use Qt6 support." OFF)
 
 option (ENABLE_CLI "Enable command Line interface." ON)
 
@@ -39,6 +43,10 @@ option (ENABLE_SSE42 "Enable SSE 4.2 intrinsics." OFF)
 option (ENABLE_FRAME_POINTER "Disable frame pointer omission" ON)
 
 option (ENABLE_ASAN "Enable Address Sanitizer" OFF)
+
+option (ENABLE_SSP "Enable Stack Smashing Protection" OFF)
+
+option (ENABLE_LLVM_PDB "Enable PDB with LLVM" OFF)
 
 option (BUILD_TESTING "Enable unit tests" ON)
 
@@ -103,6 +111,24 @@ if (ENABLE_ASAN)
     endif ()
 endif ()
 
+# Enable stack protection
+if (ENABLE_SSP)
+    if (MSVC)
+        add_compiler_flags (/GS)
+    else ()
+        add_compiler_flags (-fstack-protector-all)
+        # MinGW doesn't link against libssp automatically, and furthermore
+        # we want static linking.
+        if (MINGW)
+            set (SSP_LIBRARY "-Wl,-Bstatic -lssp -Wl,-Bdynamic")
+            set (CMAKE_C_STANDARD_LIBRARIES "${SSP_LIBRARY} ${CMAKE_C_STANDARD_LIBRARIES}")
+            set (CMAKE_CXX_STANDARD_LIBRARIES "${SSP_LIBRARY} ${CMAKE_CXX_STANDARD_LIBRARIES}")
+        else ()
+            add_linker_flags (-fstack-protector-all)
+        endif ()
+    endif ()
+endif ()
+
 
 ##############################################################################
 # Find dependencies
@@ -125,19 +151,19 @@ if (NOT WIN32)
     endif ()
 endif ()
 
+# Check whether we're targeting Intel X86 architecture
+check_cxx_source_compiles ("#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_AMD64)\nint main() { return 0; }\n#else\n#error\n#endif" HAVE_X86)
+
+# CMake fails to detect we're crosscompiling when using MSVC Arm cross compilation toolchain
+if (MSVC AND NOT HAVE_X86)
+    set (CMAKE_CROSSCOMPILING TRUE)
+endif ()
+
 list (APPEND CMAKE_MODULE_PATH ${PROJECT_SOURCE_DIR}/cmake)
 include (ConvenienceLibrary)
 include (InstallPDB)
 
-if (CMAKE_VERSION VERSION_LESS 3.12)
-    find_package (PythonInterp 3 REQUIRED)
-    if (NOT PYTHON_VERSION_MAJOR EQUAL 3)
-        message (FATAL_ERROR "Python 3.x required and requested, but Python ${PYTHON_VERSION_MAJOR}.${PYTHON_VERSION_MINOR} found.")
-    endif ()
-    set (Python3_EXECUTABLE "${PYTHON_EXECUTABLE}")
-else ()
-    find_package (Python3 REQUIRED)
-endif ()
+find_package (Python3 REQUIRED)
 
 find_package (Threads)
 
@@ -155,7 +181,11 @@ if (ENABLE_GUI)
     if (POLICY CMP0020)
         cmake_policy (SET CMP0020 NEW)
     endif()
-    find_package (Qt5 5.2.1 COMPONENTS Widgets Network ${REQUIRE_GUI})
+    if (ENABLE_QT6)
+        find_package (Qt6 COMPONENTS Widgets Network ${REQUIRE_GUI})
+    else ()
+        find_package (Qt5 5.15 COMPONENTS Widgets Network ${REQUIRE_GUI})
+    endif ()
 endif ()
 
 if (WIN32)
@@ -254,6 +284,11 @@ if (MSVC)
     string (REGEX REPLACE "/EHsc *" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /EHs-c-")
 
+    # Avoid error LNK1322: cannot avoid potential ARM hazard
+    if (NOT HAVE_X86)
+        add_compiler_flags (/Gy)
+    endif ()
+
     # Enable math constants defines
     add_definitions (-D_USE_MATH_DEFINES)
 
@@ -286,33 +321,39 @@ else ()
     # assumptions are violated.  Above all, the benefit is not worth the risk.
     add_compiler_flags (-fno-strict-aliasing)
 
+    if (CMAKE_CXX_COMPILER_ID MATCHES Clang)
+        add_compiler_flags (-Wno-pointer-bool-conversion)
+    endif ()
+
     # No RTTI required
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-rtti")
 
     # Disable C++ exceptions
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fno-exceptions")
 
-    # Enable SSE2 intrinsics on x86
-    if (MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 4)
-        add_compiler_flags (-msse2 -mfpmath=sse)
+    if (HAVE_X86)
+        # Enable SSE2 intrinsics on x86
+        if (MINGW AND CMAKE_SIZEOF_VOID_P EQUAL 4)
+            add_compiler_flags (-msse2 -mfpmath=sse)
 
-        # And tell GCC to assume 4 bytes alignment, many Linux/Windows
-        # applications only guarantee that, but not on systems where ABI
-        # clearly states otherwise.
-        #
-        # See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=38496
-        if (CMAKE_CXX_COMPILER_ID MATCHES Clang)
-            add_compiler_flags (-mstackrealign)
-        else ()
-            add_compiler_flags (-mincoming-stack-boundary=2)
+            # And tell GCC to assume 4 bytes alignment, many Linux/Windows
+            # applications only guarantee that, but not on systems where ABI
+            # clearly states otherwise.
+            #
+            # See https://gcc.gnu.org/bugzilla/show_bug.cgi?id=38496
+            if (CMAKE_CXX_COMPILER_ID MATCHES Clang)
+                add_compiler_flags (-mstackrealign)
+            else ()
+                add_compiler_flags (-mincoming-stack-boundary=2)
+            endif ()
         endif ()
-    endif ()
 
-    if (ENABLE_SSE42)
-        if (MINGW)
-            add_compiler_flags (-msse4.2)
+        if (ENABLE_SSE42)
+            if (CMAKE_CXX_COMPILER_ID STREQUAL GNU)
+                add_compiler_flags (-msse4.2)
+            endif ()
+            add_definitions (-DHAVE_SSE42)
         endif ()
-        add_definitions (-DENABLE_SSE42)
     endif ()
 
     # Be nice to Eclipse
@@ -327,23 +368,46 @@ if (APPLE)
 endif ()
 
 if (MINGW)
-    # We use our C++11 threads implementation to avoid depending on winpthreads
-    execute_process (
-        COMMAND "${CMAKE_COMMAND}" -E echo "#include <thread>\n#ifdef _GLIBCXX_HAS_GTHREADS\n#error _GLIBCXX_HAS_GTHREADS\n#endif"
-        COMMAND "${CMAKE_CXX_COMPILER}" -x c++ -E -
-        RESULT_VARIABLE STATUS_CXX11_THREADS
-        OUTPUT_QUIET
-        ERROR_QUIET
-    )
-    if (NOT STATUS_CXX11_THREADS EQUAL 0)
-        message (WARNING "MinGW with POSIX threads detected; Win32 threads recommended.")
-    else ()
-        # TODO: Consider https://github.com/meganz/mingw-std-threads
-        include_directories (${CMAKE_CURRENT_SOURCE_DIR}/compat/cxx11-threads)
+    if (NOT CMAKE_CXX_COMPILER_ID MATCHES Clang)
+        # We use our C++11 threads implementation to avoid depending on winpthreads
+        execute_process (
+            COMMAND "${CMAKE_COMMAND}" -E echo "#include <thread>\n#ifdef _GLIBCXX_HAS_GTHREADS\n#error _GLIBCXX_HAS_GTHREADS\n#endif"
+            COMMAND "${CMAKE_CXX_COMPILER}" -x c++ -E -
+            RESULT_VARIABLE STATUS_CXX11_THREADS
+            OUTPUT_QUIET
+            ERROR_QUIET
+        )
+        if (NOT STATUS_CXX11_THREADS EQUAL 0)
+            message (WARNING "MinGW with POSIX threads detected; Win32 threads recommended.")
+        else ()
+            # TODO: Consider https://github.com/meganz/mingw-std-threads
+            include_directories (${CMAKE_CURRENT_SOURCE_DIR}/compat/cxx11-threads)
+        endif ()
     endif ()
 
     # Avoid depending on MinGW runtime DLLs
-    add_linker_flags (-static -static-libgcc -static-libstdc++)
+    if (NOT ENABLE_ASAN)
+        add_linker_flags (-static -static-libgcc -static-libstdc++)
+    endif ()
+
+    if (CMAKE_CXX_COMPILER_ID MATCHES Clang)
+        if (ENABLE_LLVM_PDB)
+            # https://github.com/mstorsjo/llvm-mingw#pdb-support
+            set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -gcodeview")
+            set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -gcodeview")
+            set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -gcodeview")
+            set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -gcodeview")
+            add_linker_flags (-Wl,-pdb=)
+        else ()
+            # Generate DWARF aranges debugging information.
+            # https://github.com/jrfonseca/drmingw/issues/42
+            set (CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -gdwarf-aranges")
+            set (CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} -gdwarf-aranges")
+            set (CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -gdwarf-aranges")
+            set (CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} -gdwarf-aranges")
+        endif ()
+    endif ()
+
 elseif (ENABLE_STATIC_EXE)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
 endif ()
@@ -361,7 +425,7 @@ if (WIN32)
     # Increase number of sections in obj files
     if (MSVC)
         add_compiler_flags (-bigobj)
-    else ()
+    elseif (NOT CMAKE_CXX_COMPILER_ID MATCHES Clang)
         add_compiler_flags (-Wa,-mbig-obj)
     endif ()
 
@@ -544,7 +608,7 @@ endif ()
 ##############################################################################
 # GUI
 
-if (ENABLE_GUI AND Qt5Widgets_FOUND AND Qt5Network_FOUND)
+if (ENABLE_GUI AND (Qt6_FOUND OR Qt5_FOUND))
   add_subdirectory (gui)
 endif ()
 
@@ -566,13 +630,16 @@ endif ()
 ##############################################################################
 # Versioning
 
-find_package(Git)
-add_custom_target(version
-  ${CMAKE_COMMAND} -D SRC=${CMAKE_SOURCE_DIR}/version.h.in
-		   -D DST=${CMAKE_BINARY_DIR}/version.h
-		   -D GIT_EXECUTABLE=${GIT_EXECUTABLE}
-		   -P ${CMAKE_MODULE_PATH}/GenerateVersion.cmake
-  )
+find_package (Git)
+add_custom_target (version
+    BYPRODUCTS
+        ${CMAKE_BINARY_DIR}/version.h
+    COMMAND
+        ${CMAKE_COMMAND} -D SRC=${CMAKE_SOURCE_DIR}/version.h.in
+                         -D DST=${CMAKE_BINARY_DIR}/version.h
+                         -D GIT_EXECUTABLE="${GIT_EXECUTABLE}"
+                         -P ${CMAKE_SOURCE_DIR}/cmake/GenerateVersion.cmake
+)
 
 ##############################################################################
 # Packaging
@@ -594,10 +661,6 @@ install (
 # External scripts rely upon CPACK_PACKAGE_VERSION=latest for determining URLs
 # for the latest artifacts.
 set (CPACK_PACKAGE_VERSION "latest")
-# https://www.appveyor.com/docs/environment-variables/
-if (($ENV{APPVEYOR}) AND ($ENV{APPVEYOR_REPO_TAG}))
-    set (CPACK_PACKAGE_VERSION "$ENV{APPVEYOR_REPO_TAG_NAME}")
-endif ()
 # https://docs.github.com/en/actions/reference/environment-variables#default-environment-variables
 if ("$ENV{GITHUB_ACTIONS}" STREQUAL "true" AND "$ENV{GITHUB_REF}" MATCHES [[^refs/tags/([^/]*)$]])
     set (CPACK_PACKAGE_VERSION "${CMAKE_MATCH_1}")
@@ -610,13 +673,21 @@ if (MINGW)
     endif ()
 endif ()
 
+# distinguish the Windows Arm packages
+if (WIN32 AND NOT HAVE_X86)
+    if (CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set (CPACK_SYSTEM_NAME win64-arm)
+    else ()
+        set (CPACK_SYSTEM_NAME win32-arm)
+    endif ()
+endif ()
+if (CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+    set (CPACK_SYSTEM_NAME Linux-arm64)
+endif ()
+
 # See http://www.vtk.org/Wiki/CMake:CPackPackageGenerators
 if (WIN32)
-    if (CMAKE_VERSION VERSION_LESS 3.1)
-        set (CPACK_GENERATOR "ZIP")
-    else ()
-        set (CPACK_GENERATOR "7Z")
-    endif ()
+    set (CPACK_GENERATOR "7Z")
 elseif (APPLE)
     set (CPACK_GENERATOR "DragNDrop")
 else ()

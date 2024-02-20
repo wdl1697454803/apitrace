@@ -3,6 +3,9 @@ macro (target_optimize TARGET)
     target_compile_definitions (${TARGET} PRIVATE -DNDEBUG)
     if (MSVC)
         # TODO: MSVC makes it impossible to override early options.
+        if (ENABLE_ASAN)
+            target_compile_options (${TARGET} PRIVATE -wd5072) # ASan enabled without debug info
+        endif ()
     else ()
         target_compile_options (${TARGET} PRIVATE -O3)
     endif ()
@@ -16,11 +19,12 @@ endfunction ()
 set (SUBMODULES_MISSING FALSE)
 foreach (path IN ITEMS
     brotli/LICENSE
-    gtest/googletest/LICENSE
+    gtest/LICENSE
     libbacktrace/LICENSE
     libpng/LICENSE
     snappy/COPYING
     zlib/README
+    directxmath/LICENSE
 )
     if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${path}")
         message (SEND_ERROR "error: ${CMAKE_CURRENT_SOURCE_DIR}/${path} does not exist")
@@ -71,7 +75,9 @@ if (WIN32)
     add_subdirectory (dxerr)
     add_subdirectory (directxtex)
     add_subdirectory (devcon)
-    add_subdirectory (mhook)
+    if (HAVE_X86)
+        add_subdirectory (mhook)
+    endif ()
 endif ()
 
 add_subdirectory (crc32c)

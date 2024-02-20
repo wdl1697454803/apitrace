@@ -202,7 +202,7 @@ class GlTracer(Tracer):
         print('}')
         print()
 
-        print(r'static void _trace_user_arrays(gltrace::Context *_ctx, GLuint count);')
+        print(r'static void _trace_user_arrays(gltrace::Context *_ctx, GLuint count, bool instanced=false, GLuint instancecount=1);')
         print()
 
         # Declare helper functions to emit fake function calls into the trace
@@ -506,7 +506,13 @@ class GlTracer(Tracer):
                     print(r'        _params.%s = %s;' % (paramsMember, arg.name))
 
                 print('        GLuint _count = _glDraw_count(_ctx, _params);')
-                print('        _trace_user_arrays(_ctx, _count);')
+                if 'instancecount' in function.argNames():
+                    if 'baseinstance' in function.argNames():
+                        print('        _trace_user_arrays(_ctx, _count, true, instancecount + baseinstance);')
+                    else:
+                        print('        _trace_user_arrays(_ctx, _count, true, instancecount);')
+                else:
+                    print('        _trace_user_arrays(_ctx, _count);')
             print('    }')
 
         if function.name.startswith("glDispatchCompute"):
@@ -551,7 +557,7 @@ class GlTracer(Tracer):
             print('        _glGetBufferParameteriv%s(target, GL_BUFFER_ACCESS, &access);' % suffix)
             print('        flush = access != GL_READ_ONLY;')
             print('    }')
-            print('    if ((access_flags & GL_MAP_COHERENT_BIT) && (access_flags & GL_MAP_WRITE_BIT)) {')
+            print('    if (gltrace::is_coherent_write_map(access_flags)) {')
             print('        gltrace::Context *_ctx = gltrace::getContext();')
             print('        GLint buffer = getBufferName(target);')
             print('        auto it = _ctx->sharedRes->bufferToShadowMemory.find(buffer);')
@@ -624,7 +630,7 @@ class GlTracer(Tracer):
         if function.name == 'glUnmapNamedBuffer':
             print('    GLint access_flags = 0;')
             print('    _glGetNamedBufferParameteriv(buffer, GL_BUFFER_ACCESS_FLAGS, &access_flags);')
-            print('    if ((access_flags & GL_MAP_COHERENT_BIT) && (access_flags & GL_MAP_WRITE_BIT)) {')
+            print('    if (gltrace::is_coherent_write_map(access_flags)) {')
             print('        gltrace::Context *_ctx = gltrace::getContext();')
             print('        auto it = _ctx->sharedRes->bufferToShadowMemory.find(buffer);')
             print('        if (it != _ctx->sharedRes->bufferToShadowMemory.end()) {')
@@ -645,7 +651,7 @@ class GlTracer(Tracer):
         if function.name == 'glUnmapNamedBufferEXT':
             print('    GLint access_flags = 0;')
             print('    _glGetNamedBufferParameterivEXT(buffer, GL_BUFFER_ACCESS_FLAGS, &access_flags);')
-            print('    if ((access_flags & GL_MAP_COHERENT_BIT) && (access_flags & GL_MAP_WRITE_BIT)) {')
+            print('    if (gltrace::is_coherent_write_map(access_flags)) {')
             print('        gltrace::Context *_ctx = gltrace::getContext();')
             print('        auto it = _ctx->sharedRes->bufferToShadowMemory.find(buffer);')
             print('        if (it != _ctx->sharedRes->bufferToShadowMemory.end()) {')
@@ -695,7 +701,7 @@ class GlTracer(Tracer):
             print('    }')
 
         # FIXME: We don't support AMD_pinned_memory
-        if function.name in ('glBufferStorage', 'glNamedBufferStorage', 'glNamedBufferStorageEXT'):
+        if function.name in ('glBufferStorage', 'glBufferStorageEXT', 'glNamedBufferStorage', 'glNamedBufferStorageEXT'):
             print(r'    if (flags & GL_MAP_NOTIFY_EXPLICIT_BIT_VMWX) {')
             print(r'        if (!(flags & GL_MAP_PERSISTENT_BIT)) {')
             print(r'            os::log("apitrace: warning: %s: MAP_NOTIFY_EXPLICIT_BIT_VMWX set w/o MAP_PERSISTENT_BIT\n", __FUNCTION__);')
@@ -706,14 +712,14 @@ class GlTracer(Tracer):
             print(r'        flags &= ~GL_MAP_NOTIFY_EXPLICIT_BIT_VMWX;')
             print(r'    }')
             print(r'')
-            print(r'    if ((flags & GL_MAP_COHERENT_BIT) && (flags & GL_MAP_WRITE_BIT)) {')
+            print(r'    if (gltrace::is_coherent_write_map(flags)) {')
             print(r'        gltrace::Context *_ctx = gltrace::getContext();')
-            if function.name in ('glBufferStorage'):
+            if function.name in ('glBufferStorage', 'glBufferStorageEXT'):
                 print(r'        GLint buffer = getBufferName(target);')
             print(r'        auto memoryShadow = std::make_unique<GLMemoryShadow>();')
             print(r'        const bool success = memoryShadow->init(data, size);')
             print(r'        if (success) {')
-            print(r'            _ctx->sharedRes->bufferToShadowMemory.insert(std::make_pair(buffer, std::move(memoryShadow)));')
+            print(r'            _ctx->sharedRes->bufferToShadowMemory.insert_or_assign(buffer, std::move(memoryShadow));')
             print(r'        } else {')
             print(r'            os::log("apitrace: error: %s: cannot create memory shadow\n", __FUNCTION__);')
             print(r'        }')
@@ -907,7 +913,7 @@ class GlTracer(Tracer):
         Tracer.doInvokeFunction(self, function)
 
         if function.name in ('glMapBufferRange', 'glMapBufferRangeEXT', 'glMapNamedBufferRange', 'glMapNamedBufferRangeEXT'):
-            print(r'    if ((access & GL_MAP_COHERENT_BIT) && (access & GL_MAP_WRITE_BIT)) {')
+            print(r'    if (gltrace::is_coherent_write_map(access)) {')
             print(r'        gltrace::Context *_ctx = gltrace::getContext();')
             if function.name in ('glMapBufferRange', 'glMapBufferRangeEXT'):
                 print(r'        GLint buffer = getBufferName(target);')
@@ -915,7 +921,7 @@ class GlTracer(Tracer):
             print(r'        if (it != _ctx->sharedRes->bufferToShadowMemory.end()) {')
             print(r'            _result = it->second->map(_ctx, _result, access, offset, length);')
             print(r'        } else {')
-            print(r'            os::log("apitrace: error: %s: cannot find memory shadow\n", __FUNCTION__);')
+            print(r'            os::log("apitrace: error: %s: %u: cannot find memory shadow\n", __FUNCTION__, _call);')
             print(r'        }')
             print(r'    }')
 
@@ -1064,7 +1070,7 @@ class GlTracer(Tracer):
 
         # A simple state tracker to track the pointer values
         # update the state
-        print('static void _trace_user_arrays(gltrace::Context *_ctx, GLuint count)')
+        print('static void _trace_user_arrays(gltrace::Context *_ctx, GLuint count, bool instanced, GLuint instancecount)')
         print('{')
         print('    glfeatures::Profile profile = _ctx->profile;')
         print('    bool es1 = profile.es() && profile.major == 1;')
@@ -1161,6 +1167,11 @@ class GlTracer(Tracer):
         print('            _glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &_binding);')
         print('            if (!_binding) {')
 
+        print('                GLint divisor = 0;')
+        print('                if (instanced && _ctx->features.instanced_arrays) {')
+        print('                    _glGetVertexAttribiv(index, GL_VERTEX_ATTRIB_ARRAY_DIVISOR, &divisor);')
+        print('                }')
+
         # Get the arguments via glGet*
         for arg in function.args[1:]:
             arg_get_enum = 'GL_VERTEX_ATTRIB_ARRAY_%s' % (arg.name.upper())
@@ -1169,9 +1180,9 @@ class GlTracer(Tracer):
             print('                _%s(index, %s, &%s);' % (arg_get_function, arg_get_enum, arg.name))
 
         arg_names = ', '.join([arg.name for arg in function.args[1:-1]])
-        print('                size_t _size = _%s_size(%s, count);' % (function.name, arg_names))
+        print('                size_t _size = _%s_size(%s, divisor > 0 ? instancecount / divisor : count);' % (function.name, arg_names))
 
-        # Emit a fake function
+        # Emit a fake glVertexAttribPointer function
         print('                unsigned _call = trace::localWriter.beginEnter(&_%s_sig, true);' % (function.name,))
         for arg in function.args:
             assert not arg.output
@@ -1185,6 +1196,7 @@ class GlTracer(Tracer):
         print('                trace::localWriter.endEnter();')
         print('                trace::localWriter.beginLeave(_call);')
         print('                trace::localWriter.endLeave();')
+
         print('            }')
         print('        }')
         print('    }')
